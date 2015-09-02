@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 import argparse
 from math import log, sqrt
 import json
@@ -10,30 +12,26 @@ def jsonToList( f ):
 		results.append( json.loads( line ) )
 	return results
 
-def manufacturerNormalizer(listings, products):
+def manufacturerNormalizer(listing_manufacturers, product_manufacturers):
 	"""Returns a dictionary mapping listing manufacturers to product
 	ones (if such a manufacturer exists)"""
-	prodmanu = set()
-	for product in products:
-		prodmanu.add( product.manufacturer)
-	listingmanu = set()
-	for listing in listings:
-		listingmanu.add( listing['manufacturer'])
-
-
+	product_manufacturers = set(product_manufacturers)
+	
+	listing_manufacturers = set(listing_manufacturers)
+	
 	results = {}
-	for product in prodmanu:
+	for product_manufacturer in product_manufacturers:
 		# Processed will keep track of which listing manufacturers we've
 		# handled this time around so that we can avoid checking them
 		# again in the future.
 		# We need to store them and remove them at the end to avoid
 		# modifying the set as we iterate over it.
 		processed = set()
-		for listing in listingmanu:
-			if any( bit in listing.split() for bit in product.split() ):
-				results[listing] = product
-				processed.add( listing )
-		listingmanu -= processed
+		for listing_manufacturer in listing_manufacturers:
+			if any( bit in listing_manufacturer.split() for bit in product_manufacturer.split() ):
+				results[listing_manufacturer] = product_manufacturer
+				processed.add( listing_manufacturer )
+		listing_manufacturers -= processed
 
 	return results
 
@@ -64,14 +62,17 @@ class Reconciler( object ):
 	def __init__(self, listings, products, debug=False):
 		self.debug = debug
 		self.listings = listings
-		products = self.products = [ Product( 
+		self.products = [ Product( 
 			p['product_name'], 
 			p['manufacturer'], 
 			p['model'], 
 			p['family'] if 'family' in p else '', 
 			p['announced-date']) for p in products]
 
-		self.manufacturerMap = manufacturerNormalizer(listings, products)
+		self.manufacturerMap = manufacturerNormalizer(
+			(l['manufacturer'] for l in listings), 
+			(p['manufacturer'] for p in products))
+
 		wordFrequency = defaultdict(int)
 
 		# Compute the amount of information (entropy) in each word found in listings.
@@ -89,11 +90,11 @@ class Reconciler( object ):
 		# This might yield better results if we also specialize it by
 		# manufacturer
 		self.wordMap = wordMap = defaultdict(list)
-		for product in products:
+		for product in self.products:
 			wordMap[normalize(product.family)].append( product )
 			wordMap[normalize(product.model)].append( product )
 
-		numProducts = float(len(products))
+		numProducts = float(len(self.products))
 		self.wordScore = dict( 
 			(word, -log( len(wordMap[word]) / numProducts )) 
 			for word in wordMap.keys() )
