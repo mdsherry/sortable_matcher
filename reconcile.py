@@ -49,9 +49,10 @@ def normalize(s):
 	omitted from product names"""
 	return s.replace(" ", '').replace('_','').replace('-','')
 
+currencyRatios = json.load( open('exchangerates.json', 'rt') )
+
 def getCost( listing ):
 	"""Normalizes costs to USD. Exchange rates are approximations."""
-	currencyRatios = { 'USD': 1, 'CAD': 0.75, 'EUR': 1.1, 'GBP': 1.5 }
 	return float( listing['price'] ) * currencyRatios[listing['currency']]
 
 # Because we're going to be using products as dict keys, they need to be immutable.
