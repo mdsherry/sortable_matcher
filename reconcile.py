@@ -70,35 +70,46 @@ class Reconciler( object ):
 			p['family'] if 'family' in p else '', 
 			p['announced-date']) for p in products]
 
-		self.manufacturerMap = manufacturerNormalizer(
+		self.manufacturer_map = manufacturerNormalizer(
 			(l['manufacturer'] for l in listings), 
 			(p['manufacturer'] for p in products))
 
-		wordFrequency = defaultdict(int)
+		self.list_word_score = self.buildListingFrequencies()
+		self.words_by_manufacturer = self.buildProductFrequencies()
+		
+	def buildListingFrequencies(self):
+		word_frequency = defaultdict(int)
 
 		# Compute the amount of information (entropy) in each word found in listings.
 		# This value will be used later to weight guesses
-		for listing in listings:
+		for listing in self.listings:
 			for n in xrange(1,3):
 				for word in ngrams(n, listing['title'].split()):
-					wordFrequency[word] += 1
-		numListings = float(len(listings))
-		self.listWordScore = dict( 
-			(word, -log( wordFrequency[word] / numListings )) 
-			for word in wordFrequency.keys() )
+					word_frequency[word] += 1
+		num_listings = float(len(self.listings))
+		return { word: -log( word_frequency[word] / num_listings )
+			for word in word_frequency.keys() }
 
+	def buildProductFrequencies(self):
 		# Compute the amount of information in each model and family name.
-		# This might yield better results if we also specialize it by
-		# manufacturer
-		self.wordMap = wordMap = defaultdict(list)
+		# Because we restrict matching by manufacturer, all scores are
+		# per-manufacturer.
+		products_by_manufacturer = defaultdict(list)
 		for product in self.products:
-			wordMap[normalize(product.family)].append( product )
-			wordMap[normalize(product.model)].append( product )
-
-		numProducts = float(len(self.products))
-		self.wordScore = dict( 
-			(word, -log( len(wordMap[word]) / numProducts )) 
-			for word in wordMap.keys() )
+			products_by_manufacturer[product.manufacturer].append(product)
+		
+		words_by_manufacturer = {}
+		for manufacturer, products in products_by_manufacturer.items():
+			word_map = defaultdict(list)
+			for product in products:
+				word_map[normalize(product.family)].append( product )
+				word_map[normalize(product.model)].append( product )
+			
+			num_products = float(len(products))
+			words_by_manufacturer[manufacturer] = (
+				word_map, { word: -log( len(word_map[word]) / num_products )
+				for word in word_map.keys() } )
+		return words_by_manufacturer
 
 	def isCamera(self, listing):
 		"""Employs several heuristics to try to determine whether
@@ -114,9 +125,9 @@ class Reconciler( object ):
 		cost = getCost( listing )
 		if cost < 30:
 			p = 0.1
-		if cost < 50:
+		elif cost < 50:
 			p = 0.3
-		if cost < 100:
+		elif cost < 100:
 			p = 0.5
 		title = listing['title'].upper()
 		if 'MP' in title or 'MEGAPIXEL' in title:
@@ -136,41 +147,53 @@ class Reconciler( object ):
 		with the listing.
 
 		Returns a dictionary mapping product to score."""
-		if not self.isCamera( listing ) or listing['manufacturer'] not in self.manufacturerMap:
+		if not self.isCamera( listing ) or listing['manufacturer'] not in self.manufacturer_map:
 			return {}
-		manufacturer = self.manufacturerMap[ listing['manufacturer'] ]
-
-		results = dict( (product,0) for product in self.products if product.manufacturer == manufacturer )
+		manufacturer = self.manufacturer_map[ listing['manufacturer'] ]
+		word_map, word_score = self.words_by_manufacturer[manufacturer]
+		results = defaultdict( float )
 
 		for n in xrange(1,3):
 
 			for word in ngrams(n, listing['title'].split()):
 
-				dampener = self.listWordScore[word] if word in self.listWordScore else 1
-				if word in self.wordMap:
-					wordProducts = self.wordMap[word]
-					scoreIncr = self.wordScore[word]
+				dampener = self.list_word_score.get(word, 1)
+				if word in word_map:
+					word_products = word_map[word]
+					score_incr = word_score[word]
 
-					for product in wordProducts:
+					for product in word_products:
 						if product.manufacturer == manufacturer:
-							results[product] += scoreIncr * dampener
+							results[product] += score_incr * dampener
 
 		return results
 
 	def reconcile(self, score_threshold=35):
 		"""Reconciles listings with products."""
-		matchresults = defaultdict(list)
+		match_results = defaultdict(list)
 		for listing in self.listings:
 			results = self.findCandidateProducts( listing )
-			hits = sorted( results.items(), key=lambda (p,s): s )
+			hits = sorted( results.items(), key=lambda (_,s): s )
 			if hits:
 				product, score = hits[-1]
+
 				if score > score_threshold:
-					matchresults[product.product_name].append( listing)
+					if len( hits ) > 1:
+						# If we have more than one prospect, and their
+						# scores only differ by a little, we're too
+						# uncertain.
+						# (Looking at pruned results, in most cases,
+						# the scores were the same.)
+						_, other_score = hits[-2]
+						if score - other_score < 2:
+							continue
+					match_results[product.product_name].append( listing)
+					if self.debug:
+						listing['score']  = score
 
-		return matchresults
+		return match_results
 
-	def pruneByCost(self, matchresults, sanity_factor = 1.5, sd_threshold = 0.1 ):
+	def pruneByCost(self, match_results, sanity_factor = 1.5, sd_threshold = 0.1 ):
 		"""Makes the assumption that similar products will be somewhat similarly priced,
 		and that great outliers are likely different products instead.
 
@@ -183,11 +206,11 @@ class Reconciler( object ):
 
 		This trades false negatives for reduced false positives.
 
-		Modifies the matchresults dict in place."""
+		Modifies the match_results dict in place."""
 
 		# Improved heuristics would distinguish between full kits and body only
 		# (Boîtier seulement, nur Gehäuse, etc.) where applicable.
-		for product, listings in matchresults.items():
+		for product, listings in match_results.items():
 			if len( listings ) < 3:
 				continue
 			costs = map( getCost, listings )
@@ -195,13 +218,9 @@ class Reconciler( object ):
 			sd = sqrt( sum( (cost - mean)**2 for cost in costs ) / (len(costs)-1) )
 			if sd < mean * sd_threshold:
 				continue
-			if self.debug:
-				removed = [(listing,cost) for (listing, cost) in zip(listings, costs) if mean - cost >= sd * sanity_factor]
-				if removed:
-					print product, len(listings), mean, sd, removed
 			listings = [listing for (listing, cost) in zip(listings, costs) if mean - cost < sd * sanity_factor]
-			matchresults[product] = listings
-		return matchresults
+			match_results[product] = listings
+		return match_results
 
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
@@ -225,7 +244,7 @@ if __name__ == '__main__':
 	products = jsonToList(args.products)
 
 	reconciler = Reconciler( listings, products, debug=args.debug )
-	matchresults = reconciler.reconcile(args.score_threshold)
-	reconciler.pruneByCost( matchresults, args.sanity_factor, args.sd_threshold)
-	json.dump( matchresults, args.output, sort_keys=True, indent=4 if args.pretty_print else None )
+	match_results = reconciler.reconcile(args.score_threshold)
+	reconciler.pruneByCost( match_results, args.sanity_factor, args.sd_threshold)
+	json.dump( match_results, args.output, sort_keys=True, indent=4 if args.pretty_print else None )
 	args.output.write("\n")
