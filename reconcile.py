@@ -246,5 +246,8 @@ if __name__ == '__main__':
 	reconciler = Reconciler( listings, products, debug=args.debug )
 	match_results = reconciler.reconcile(args.score_threshold)
 	reconciler.pruneByCost( match_results, args.sanity_factor, args.sd_threshold)
-	json.dump( match_results, args.output, sort_keys=True, indent=4 if args.pretty_print else None )
-	args.output.write("\n")
+	for product, matches in match_results.items():
+		args.output.write( '{{"product_name": {product}, "listings": {matches}}}\n'.format( 
+			product=json.dumps( product ), 
+			matches=json.dumps( matches, indent=4 if args.pretty_print else None ) ) )
+		
