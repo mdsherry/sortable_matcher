@@ -56,16 +56,18 @@ class TestReconciler( unittest.TestCase ):
 				"Keys for row {} didn't match".format( i + 1 ) )
 
 	def test_manufacturerNormalizer(self):
-		prodmanus = ['Canon', 'Nikon', 'Konica Minolta']
-		listingmanus = ['Canon', 'Canon Canada', 'Nikon', 'Sony', 'Konica Minolta', 'Minolta']
+		prodmanus = ['Canon', 'Nikon', 'Konica Minolta', 'Fujifilm', 'Sigma']
+		listingmanus = ['Canon', 'Canon Canada', 'Nikon', 'Sony', 'Konica Minolta', 'Minolta', 'Sigma', 'SIGMATEK', 'Fuji']
 		results = reconcile.manufacturerNormalizer( listingmanus, prodmanus )
-
-		self.assertEqual( 'Canon', results['Canon'] )
-		self.assertEqual( 'Canon', results['Canon Canada'] )
-		self.assertEqual( 'Nikon', results['Nikon'] )
+		print results
+		self.assertEqual( 'Canon', results['CANON'] )
+		self.assertEqual( 'Canon', results['CANON CANADA'] )
+		self.assertEqual( 'Nikon', results['NIKON'] )
 		self.assertFalse( 'Sony' in results )
-		self.assertEqual( 'Konica Minolta', results['Konica Minolta'])
-		self.assertEqual( 'Konica Minolta', results['Minolta'])
+		self.assertEqual( 'Konica Minolta', results['KONICA MINOLTA'])
+		self.assertEqual( 'Konica Minolta', results['MINOLTA'])
+		self.assertEqual( 'Fujifilm', results['FUJI'])
+		self.assertEqual( 'Sigma', results['SIGMATEK'])
 
 	def test_pruneByCosts(self):
 		reconciler = reconcile.Reconciler([], [])

@@ -19,8 +19,10 @@ def manufacturerNormalizer(listing_manufacturers, product_manufacturers):
 	ones (if such a manufacturer exists)"""
 	product_manufacturers = set(product_manufacturers)
 	
-	listing_manufacturers = set(listing_manufacturers)
-	
+	listing_manufacturers = set(m.upper() for m in listing_manufacturers)
+	def matches( product_bit, listing_bits ):
+		return any( listing_bit.startswith( product_bit) for listing_bit in listing_bits )
+
 	results = {}
 	for product_manufacturer in product_manufacturers:
 		# Processed will keep track of which listing manufacturers we've
@@ -29,8 +31,14 @@ def manufacturerNormalizer(listing_manufacturers, product_manufacturers):
 		# We need to store them and remove them at the end to avoid
 		# modifying the set as we iterate over it.
 		processed = set()
+		ucase_product_manufacturer = product_manufacturer.upper()
+
+		# Regretable truncation to match more cases
+		if ucase_product_manufacturer == 'FUJIFILM':
+			ucase_product_manufacturer = 'FUJI'
+
 		for listing_manufacturer in listing_manufacturers:
-			if any( bit in listing_manufacturer.split() for bit in product_manufacturer.split() ):
+			if any( matches( bit, listing_manufacturer.split() ) for bit in ucase_product_manufacturer.split() ):
 				results[listing_manufacturer] = product_manufacturer
 				processed.add( listing_manufacturer )
 		listing_manufacturers -= processed
@@ -49,7 +57,7 @@ def ngrams( n, bits):
 def normalize(s):
 	"""Normalize by stripping out all characters that might get 
 	omitted from product names"""
-	return s.replace(" ", '').replace('_','').replace('-','')
+	return s.upper().replace(" ", '').replace('_','').replace('-','')
 
 currencyRatios = json.load( open('exchangerates.json', 'rt') )
 
@@ -67,7 +75,7 @@ class Reconciler( object ):
 		self.listings = listings
 		self.products = [ Product( 
 			p['product_name'], 
-			p['manufacturer'], 
+			p['manufacturer'],
 			p['model'], 
 			p['family'] if 'family' in p else '', 
 			p['announced-date']) for p in products]
@@ -142,6 +150,10 @@ class Reconciler( object ):
 		# ... digital camera with <features> ...
 		if ' WITH ' in title:
 			p += 0.2
+		
+		if self.debug:
+			listing['score'] = p
+		
 		return p >= 0.5
 
 	def findCandidateProducts( self, listing ):
@@ -149,16 +161,24 @@ class Reconciler( object ):
 		with the listing.
 
 		Returns a dictionary mapping product to score."""
-		if not self.isCamera( listing ) or listing['manufacturer'] not in self.manufacturer_map:
+		if not self.isCamera( listing ) or listing['manufacturer'].upper() not in self.manufacturer_map:
+			listing['no-manufacturer'] = listing['manufacturer'].upper() not in self.manufacturer_map
 			return {}
-		manufacturer = self.manufacturer_map[ listing['manufacturer'] ]
+		manufacturer = self.manufacturer_map[ listing['manufacturer'].upper() ]
 		word_map, word_score = self.words_by_manufacturer[manufacturer]
 		results = defaultdict( float )
 
 		for n in xrange(1,3):
 
 			for word in ngrams(n, listing['title'].split()):
-
+				# The theory behind 'dampener' is that words that appear frequently
+				# in the corpus are more likely to be accidental occurrences, rather
+				# than instances of a model/family name. A good example is the
+				# Leica Digilux Zoom, where zoom is a word that appears frequently
+				# in descriptions.
+				#
+				# I suspect, however, that it might be too efficient, and be leading
+				# to more false negatives than is warrented.
 				dampener = self.list_word_score.get(word, 1)
 				if word in word_map:
 					word_products = word_map[word]
@@ -173,12 +193,16 @@ class Reconciler( object ):
 	def reconcile(self, score_threshold=35):
 		"""Reconciles listings with products."""
 		match_results = defaultdict(list)
+		misses = []
 		for listing in self.listings:
 			results = self.findCandidateProducts( listing )
 			hits = sorted( results.items(), key=lambda (_,s): s )
 			if hits:
 				product, score = hits[-1]
-
+				
+				if self.debug:
+					listing['match_score']  = score
+				
 				if score > score_threshold:
 					if len( hits ) > 1:
 						# If we have more than one prospect, and their
@@ -190,10 +214,14 @@ class Reconciler( object ):
 						if score - other_score < 2:
 							continue
 					match_results[product.product_name].append( listing)
-					if self.debug:
-						listing['score']  = score
+					
+				else:
+					misses.append( listing )
+			else:
+				listing['no-hits'] = True
+				misses.append( listing)
 
-		return match_results
+		return match_results, misses
 
 	def pruneByCost(self, match_results, sanity_factor = 1.5, sd_threshold = 0.1 ):
 		"""Makes the assumption that similar products will be somewhat similarly priced,
@@ -233,7 +261,7 @@ def open_or_die( fname ):
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--score-threshold', type=int, default=35,
-		help="Score threshold for a product to be considered a match to a listing. Default: 35")
+		help="Score threshold for a product to be considered a match to a listing. Default: 25")
 	parser.add_argument("--sd-threshold", type=float, default=0.1, 
 		help="Minimum ratio of standard deviation to mean to cull suspiciously inexpensive matches. Default: 0.1")
 	parser.add_argument("--sanity-factor", type=float, default=1.5, 
@@ -247,6 +275,8 @@ if __name__ == '__main__':
 		help="File to write reconciled output to. Default: stdout")
 	parser.add_argument("--pretty-print", action="store_true", 
 		help="Pretty-print output")
+	parser.add_argument("--track-misses", action="store_true", help="Output information to track listings unmatched with products. Turns on debugging.")
+
 	args = parser.parse_args()
 	if args.listings is None:
 		args.listings = open_or_die( 'listings.txt' )
@@ -256,11 +286,62 @@ if __name__ == '__main__':
 	listings = jsonToList(args.listings)
 	products = jsonToList(args.products)
 
-	reconciler = Reconciler( listings, products, debug=args.debug )
-	match_results = reconciler.reconcile(args.score_threshold)
+	reconciler = Reconciler( listings, products, debug=args.debug or args.track_misses)
+	match_results, misses = reconciler.reconcile(args.score_threshold)
 	reconciler.pruneByCost( match_results, args.sanity_factor, args.sd_threshold)
 	for product, matches in match_results.items():
 		args.output.write( '{{"product_name": {product}, "listings": {matches}}}\n'.format( 
 			product=json.dumps( product ), 
 			matches=json.dumps( matches, indent=4 if args.pretty_print else None ) ) )
+	
+	if args.track_misses:
+		# There are a couple of cheap cameras (~$30) that get accidentally classified as 
+		# accessories.
+		accessories = [m for m in misses if 'score' in m and m['score'] < 0.5]
+		with open('accessories.json', 'wt') as f:
+			json.dump( accessories,f, indent=4)
+		print "# Accessories:", len(accessories)
+		misses = [m for m in misses if 'score' not in m or m['score'] >= 0.5]
+
+		# There were previously many false negatives, mostly due to Fuji and 
+		# Sigmatek (vs Sigma), as well as case issues. At a glance, there seem to be
+		# no more false negatives here.
+		nomanu = [m for m in misses if 'no-manufacturer' in m and m['no-manufacturer']]
+		with open('no-manufacturer.json', 'wt') as f:
+			json.dump(nomanu,f, indent=4)
+		print "# No manufacturer:", len(nomanu)
+		misses = [m for m in misses if 'no-manufacturer' not in m]
+		
+		# These are cases where we failed to guess even one product match.
+		# Many of these are cases where there legitimately are no matching products.
+		# In other cases, it may be because the model in the listing is missing
+		# a portion of the model name (e.g. D300 instead of D300S), or sometimes
+		# have extra bits that aren't part of the model name (e.g. DSC-T99/G)
+		# However, such is the nature of model names, I can't tell at a glance
+		# whether these are actually false negatives, or separate model sub-lines.
+		# (Previously, there were also a number of false negatives due to
+		# differences in case.)
+		nohits = [m for m in misses if 'no-hits' in m]
+		with open('no-hits.json', 'wt') as f:
+			json.dump(nohits,f, indent=4)
+		print "# No hits:", len(nohits)
+		misses = [m for m in misses if 'no-hits' not in m]
+		
+		# This is the trickiest category to resolve, and the easiest to influence.
+		# The lower the score threshold, the fewer false negatives, but the more 
+		# false positives. Changes in how the entropy of model names is calculated
+		# ended up lowering a lot of scores; I've shifted the threshold from 35 to 25
+		# and the result is a lot more matches.
+		# TODO: Examine results and double-check new matches
+		scoretoolow = sorted([m for m in misses if m['match_score'] < args.score_threshold], key=lambda m:m['match_score'],reverse=True)
+		with open('low_score.json', 'wt') as f:
+			json.dump(scoretoolow,f, indent=4)
+		print "# Score too low:", len(scoretoolow)
+		misses = [m for m in misses if m['match_score'] >= args.score_threshold]
+		
+		with open('misses.json', 'wt') as f:
+			json.dump( misses, f)
+		print "# Remainder:", len(misses)
+		
+		print "# Matched:", sum( len(v) for v in match_results.values() )
 		
