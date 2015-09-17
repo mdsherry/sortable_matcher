@@ -4,6 +4,8 @@ import argparse
 from math import log, sqrt
 import json
 from collections import defaultdict, Counter, namedtuple
+import os.path
+import sys
 
 def jsonToList( f ):
 	"""Reads one JSON entry per line from  f  and returns a list of the results"""
@@ -222,6 +224,12 @@ class Reconciler( object ):
 			match_results[product] = listings
 		return match_results
 
+def open_or_die( fname ):
+	if os.path.exists( fname ):
+		return open( fname, 'rt' )
+	sys.stderr.write("Could not find file {}. Quitting.\n".format( fname ) )
+	sys.exit(-1)
+
 if __name__ == '__main__':
 	parser = argparse.ArgumentParser()
 	parser.add_argument('--score-threshold', type=int, default=35,
@@ -231,15 +239,20 @@ if __name__ == '__main__':
 	parser.add_argument("--sanity-factor", type=float, default=1.5, 
 		help="Matches more than this number times the standard deviation will be removed. Default: 1.5")
 	parser.add_argument("--debug", action="store_true", help="Enable additional debugging output")
-	parser.add_argument("--listings", type=argparse.FileType('rt'), default='listings.txt',
+	parser.add_argument("--listings", type=argparse.FileType('rt'), default=None,
 		help="JSON file containing listings. Default: listings.txt")
-	parser.add_argument("--products", type=argparse.FileType('rt'), default='products.txt',
+	parser.add_argument("--products", type=argparse.FileType('rt'), default=None,
 		help="JSON file containing products. Default: products.txt")
 	parser.add_argument("--output", type=argparse.FileType('wt'), default='-',
 		help="File to write reconciled output to. Default: stdout")
 	parser.add_argument("--pretty-print", action="store_true", 
 		help="Pretty-print output")
 	args = parser.parse_args()
+	if args.listings is None:
+		args.listings = open_or_die( 'listings.txt' )
+	if args.products is None:
+		args.products = open_or_die( 'products.txt' )
+		
 	listings = jsonToList(args.listings)
 	products = jsonToList(args.products)
 
